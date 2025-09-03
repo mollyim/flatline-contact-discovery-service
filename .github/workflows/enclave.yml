@@ -4,6 +4,7 @@ name: Enclave artifacts
 # on:
 #   push:
 #     branches: [ main ]
+on: workflow_dispatch
 
 env:
   DOCKER_BUILD_ARGS: --cache-from type=gha --cache-to type=gha
