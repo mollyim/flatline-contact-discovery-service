@@ -1,8 +1,9 @@
 name: Build and push Docker image
 
-on:
-  release:
-    types: [published]
+# FLT(uoemai): Workflows run in the platform repository.
+# on:
+#   release:
+#     types: [published]
 
 env:
   DOCKER_BUILD_ARGS: --cache-from type=gha --cache-to type=gha
