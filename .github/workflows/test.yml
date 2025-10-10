@@ -1,8 +1,6 @@
 name: Service CI
 
-# FLT(uoemai): Workflows run in the platform repository.
-# on: [push]
-on: workflow_dispatch
+on: [push]
 
 env:
   DOCKER_BUILD_ARGS: --cache-from type=gha --cache-to type=gha
