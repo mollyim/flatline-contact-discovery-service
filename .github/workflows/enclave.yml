@@ -1,10 +1,8 @@
 name: Enclave artifacts
 
-# FLT(uoemai): Workflows run in the platform repository.
-# on:
-#   push:
-#     branches: [ main ]
-on: workflow_dispatch
+on:
+  push:
+    branches: [ main ]
 
 env:
   DOCKER_BUILD_ARGS: --cache-from type=gha --cache-to type=gha
