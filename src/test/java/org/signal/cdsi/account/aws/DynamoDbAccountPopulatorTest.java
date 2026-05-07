@@ -225,6 +225,56 @@ class DynamoDbAccountPopulatorTest {
   }
 
   @Test
+  void handleSubscribeToShardEvent_InvalidRecords() throws JsonProcessingException {
+    final ObjectMapper objectMapper = new ObjectMapper();
+
+    final List<Account> accounts = new ArrayList<>();
+    final List<Record> records = new ArrayList<>();
+
+    for (int i = 0; i < 10; i++) {
+
+      final Record.Builder recordBuilder = Record.builder()
+          .sequenceNumber(String.valueOf(i));
+
+      // insert two bad records in the middle
+      if (i == 2) {
+        recordBuilder.data(SdkBytes.fromUtf8String("{ invalid json"));
+      } else if (i == 7) {
+
+        final Account accountWithNullUuid = new Account(++nextE164, null, UUID.randomUUID(), null, true);
+        recordBuilder.data(SdkBytes.fromUtf8String(objectMapper.writeValueAsString(accountWithNullUuid)));
+
+      } else {
+        final Account account = generateRandomAccount(true);
+        accounts.add(account);
+        recordBuilder
+            .data(SdkBytes.fromUtf8String(objectMapper.writeValueAsString(account)));
+      }
+
+      records.add(recordBuilder.build());
+    }
+
+    final SubscribeToShardEvent event = SubscribeToShardEvent.builder()
+        .continuationSequenceNumber("continuation")
+        .millisBehindLatest(0L)
+        .records(records)
+        .build();
+
+    assertFalse(accountPopulator.hasFinishedInitialAccountPopulation(),
+        "Account population should not complete until at least one stream event has been processed");
+
+    accountPopulator.handleSubscribeToShardEvent(event);
+
+    assertTrue(accountPopulator.hasFinishedInitialAccountPopulation());
+
+    final List<DirectoryEntry> expectedEntries = accounts.stream()
+        .map(DynamoDbAccountPopulatorTest::directoryEntryFromAccount)
+        .toList();
+
+    verify(enclave).loadData(expectedEntries, false);
+  }
+
+  @Test
   void e164FromString() {
     assertEquals(18005551234L, DynamoDbAccountPopulator.e164FromString("+18005551234"));
     assertThrows(IllegalArgumentException.class, () -> DynamoDbAccountPopulator.e164FromString("18005551234"));

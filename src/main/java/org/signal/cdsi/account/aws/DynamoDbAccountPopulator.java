@@ -358,7 +358,7 @@ class DynamoDbAccountPopulator implements AccountPopulator, SubscribeToShardResp
               DirectoryEntry.deletionEntry(account.e164());
 
           directoryEntries.add(directoryEntry);
-        } catch (final JsonProcessingException e) {
+        } catch (final Exception e) {
           logger.error("Discarded record {}; could not parse JSON", record.sequenceNumber(), e);
         }
       }
