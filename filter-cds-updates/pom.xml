@@ -9,10 +9,8 @@
   <version>JGITVER</version>
 
   <properties>
-    <!-- Note that this is deliberately still at Java 21 even though the main project is at Java 25 because the latest
-    AWS Lambda runtime is Java 21 -->
-    <maven.compiler.source>21</maven.compiler.source>
-    <maven.compiler.release>21</maven.compiler.release>
+    <maven.compiler.source>25</maven.compiler.source>
+    <maven.compiler.release>25</maven.compiler.release>
 
     <aws-lambda-java-core.version>1.4.0</aws-lambda-java-core.version>
     <aws-lambda-java-events.version>3.16.1</aws-lambda-java-events.version>
