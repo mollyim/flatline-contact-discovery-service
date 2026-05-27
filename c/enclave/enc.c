@@ -507,11 +507,15 @@ int enclave_rate_limit(
   size_t workspace_size = in_size  + PBUTIL_WORKSPACE_BASE(struct org_signal_cdsi_client_request_t);
   GOTO_IF_ERROR(err = MALLOCZ_SIZE(c->workspace, workspace_size), client_unlock);
   struct org_signal_cdsi_client_request_t *req = org_signal_cdsi_client_request_new(c->workspace, workspace_size);
-  if (req == 0)
-    return err_ENCLAVE__RATELIMIT__REQUEST_PB_NEW;
+  if (req == 0) {
+    err = err_ENCLAVE__RATELIMIT__REQUEST_PB_NEW;
+    goto client_unlock;
+  }
   int size = org_signal_cdsi_client_request_decode(req, in, in_size);
-  if (size < 0)
-    return err_ENCLAVE__RATELIMIT__REQUEST_PB_DECODE;
+  if (size < 0) {
+    err = err_ENCLAVE__RATELIMIT__REQUEST_PB_DECODE;
+    goto client_unlock;
+  }
 
   // Check input preconditions using constant-time operations. We require that:
   //
@@ -526,13 +530,14 @@ int enclave_rate_limit(
       req->new_e164s.size + req->prev_e164s.size == 0)
   {
     TEST_LOG("Invalid argument to enclave_rate_limit. Invalid array size");
-    return err_ENCLAVE__RATELIMIT__REQUEST_PB_INVALID;
+    err = err_ENCLAVE__RATELIMIT__REQUEST_PB_INVALID;
+    goto client_unlock;
   }
   c->req = req;
 
   // Check old token.  If valid, set computed output size.
   TEST_LOG("ratelimit_validate_received_rate_limit_token");
-  RETURN_IF_ERROR(ratelimit_validate_received_rate_limit_token(c->req));
+  GOTO_IF_ERROR(err = ratelimit_validate_received_rate_limit_token(c->req), client_unlock);
 
   // divide the size in bytes by 8 to get the size in uint64_ts. Use shift for
   // fast constant time division by power of 2.
