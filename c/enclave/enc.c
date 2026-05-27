@@ -651,27 +651,47 @@ int enclave_run(
   // `new_e164s` array.
   uint8_t *e164s;
   GOTO_IF_ERROR(err = MALLOCZ_SIZE(e164s, size_e164s), free_index);
-  size_t prev_e164s_size = c->req->prev_e164s.size / sizeof(uint64_t);
-  uint64_t* new_e164s = c->req->new_e164s.buf_p == NULL
-      // We must be able to reference *(new_e164s+i-prev_e164s_size) for all i in [0,num_e164s).
-      // If buf_p is null, then all e164s are within prev_e164s, so pointing to the END of
-      // that buffer maintains this invariant.
-      ? (uint64_t*)(c->req->prev_e164s.buf_p + c->req->prev_e164s.size)
-      : (uint64_t*)c->req->new_e164s.buf_p;
-  uint64_t* prev_e164s = c->req->prev_e164s.buf_p == NULL
-      // We must be able to reference (*prev_e164s+i) for all i in [0,num_e164s).
-      // If buf_p is null, then all e164s are within new_e164s, so pointing to the BEGINNING
-      // of that buffer maintains this invariant.
-      ? new_e164s
-      : (uint64_t*)c->req->prev_e164s.buf_p;
+
+  // We set up a_e164s_size, a_e164s, and b_e164s so that the subsequent loop will never
+  // dereference an invalid memory location.  new_e164s and prev_e164s are both, if available,
+  // fully contained within the contiguous c->workspace.  We make sure that a_e164s points
+  // to the one of these that's first within the workspace.  This means that even if it's
+  // the smaller of the two, and some index `i` is valid for b_e164s but not a_e164s, the
+  // dereference of a_e164s[i] will still be valid.  a_e164s_size is the number of u64s
+  // stored within the a_e164s array.  If either of new_e164s or prev_e164s is null (empty),
+  // we simplify to just having a_e164s_size be zero and having both a_e164s and b_e164s
+  // point to the other (potentially non-null) array.
+  //
+  // Note that this use of `if` statements potentially leaks the order of the `prev/new_e164s`
+  // arrays within the `req`, but this information is not sensitive.
+  size_t a_e164s_size;
+  uint64_t* a_e164s;
+  uint64_t* b_e164s;
+  if (c->req->prev_e164s.buf_p == NULL) {
+    a_e164s_size = 0;
+    a_e164s = (uint64_t*)c->req->new_e164s.buf_p;
+    b_e164s = (uint64_t*)c->req->new_e164s.buf_p;
+  } else if (c->req->new_e164s.buf_p == NULL) {
+    a_e164s_size = 0;
+    a_e164s = (uint64_t*)c->req->prev_e164s.buf_p;
+    b_e164s = (uint64_t*)c->req->prev_e164s.buf_p;
+  } else if (c->req->prev_e164s.buf_p < c->req->new_e164s.buf_p) {
+    a_e164s_size = c->req->prev_e164s.size / sizeof(uint64_t);
+    a_e164s = (uint64_t*)c->req->prev_e164s.buf_p;
+    b_e164s = (uint64_t*)c->req->new_e164s.buf_p;
+  } else {
+    a_e164s_size = c->req->new_e164s.size / sizeof(uint64_t);
+    a_e164s = (uint64_t*)c->req->new_e164s.buf_p;
+    b_e164s = (uint64_t*)c->req->prev_e164s.buf_p;
+  }
   for(size_t i = 0; i < num_e164s; ++i) {
-    // This assigns the value of the i-th e164 to be either (1) the i-th prev_e164 if
-    // i < prev_e164s.size or(2) the (i - prev_e164s)-th n_e164 otherwise.
+    // This assigns the value of the i-th e164 to be either (1) the i-th a_e164 if
+    // i < a_e164s_size or (2) the (i - a_e164s_size)-th e164 otherwise.
     //
     // The indexes used look as if they should cause memory violations, but this is safe because
     // (1) all memory is part of the client workspace (c->workspace) allocated in `enclave_rate_limit` and
-    // (2) the new_e164s are allocated after the prev_e164s in that array.
-    ((uint64_t*)e164s)[i] = U64_TERNARY(i < prev_e164s_size, *(prev_e164s + i), *(new_e164s + i - prev_e164s_size));
+    // (2) the b_e164s are allocated after the a_e164s in that array.
+    ((uint64_t*)e164s)[i] = U64_TERNARY(i < a_e164s_size, *(a_e164s + i), *(b_e164s + i - a_e164s_size));
   }
 
   signal_user_record *user_records;
