@@ -39,10 +39,13 @@ RUN mkdir /src && \
         libppl-dev \
         autoconf
 
-RUN apt-get -y install pipx pip python3-venv
-ENV PIPX_HOME=/opt/pipx
-ENV PIPX_BIN_DIR=/usr/local/bin
-RUN pipx install pbtools==0.47.0 && echo "done"
+RUN apt-get -y install pip python3-venv
+COPY pbtools_requirements /tmp/pbtools_requirements
+RUN \
+  python3 -m venv /opt/pip_env && \
+  /opt/pip_env/bin/pip install --require-hashes -r /tmp/pbtools_requirements && \
+  echo "done"
+ENV PATH="$PATH:/opt/pip_env/bin"
 
 COPY sgx_runtime_libraries.sh /tmp/sgx_runtime_libraries.sh
 RUN /tmp/sgx_runtime_libraries.sh
