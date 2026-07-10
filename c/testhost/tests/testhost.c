@@ -180,8 +180,9 @@ int load_simple_data(oe_enclave_t *enclave)
     load_req->clear_all = false;
     load_req->e164_aci_pni_uak_tuples.size = records_per_block * sizeof(*data);
     load_req->e164_aci_pni_uak_tuples.buf_p = (uint8_t *)data;
-    load_req->shared_token_secret.size = 0;
-    load_req->shared_token_secret.buf_p = 0;
+    uint8_t buf[1] = {1};
+    load_req->shared_token_secret.size = 1;
+    load_req->shared_token_secret.buf_p = buf;
 
     int len = org_signal_cdsi_enclave_load_encode(load_req, encoded, encoded_size);
     if (len < 0)

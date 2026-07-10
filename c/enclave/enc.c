@@ -338,6 +338,8 @@ int enclave_load_pb(
     RETURN_IF_ERROR(ratelimit_set_shared_secret(
         load_req->shared_token_secret.size,
         load_req->shared_token_secret.buf_p));
+  } else {
+    return err_ENCLAVE__LOADPB__NO_RATELIMIT_SECRET;
   }
   if (load_req->clear_all)
   {
