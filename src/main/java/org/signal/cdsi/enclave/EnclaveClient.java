@@ -90,17 +90,22 @@ public class EnclaveClient {
     Preconditions.checkState(newTokenHash != null);
 
     state = State.COMPLETE;
-    // Given a request of size X, we're unsure what's in that request (it's encrypted), so
-    // we assume it's the request that gives us the largest response possible.  The request
-    // that gives us the largest possible response is one that's entirely filled with e164s,
-    // with no ACI/UAK pairs.  For such a request, each 8 bytes of input (a single e164)
-    // returns 40 bytes of output (an 8-byte e164, a 16-byte ACI, and a 16-byte PNI).  This
-    // is a 5x multiplier (output=input*5).  There's also the potential that a few other singular
-    // fields may be added to the proto, so add in a bit of slop (128 bytes).
-    final ByteBuffer out = ByteBuffer.allocateDirect(requestSize * 5 + 128);
 
     return tokenRateLimiter.validate(rateLimitKey, newTokenHash)
-        .thenCompose(permitsUsed -> enclave.clientRun(this, permitsUsed, ack, out));
+        .thenCompose(permitsUsed -> {
+          // Given a request of size X, we're unsure what's in that request (it's encrypted), so
+          // we assume it's the request that gives us the largest response possible.  The request
+          // that gives us the largest possible response is one that's entirely filled with e164s,
+          // with no ACI/UAK pairs.  For such a request, each 8 bytes of input (a single e164)
+          // returns 40 bytes of output (an 8-byte e164, a 16-byte ACI, and a 16-byte PNI).  This
+          // is a 5x multiplier (output=input*5).  There's also the potential that a few other singular
+          // fields may be added to the proto, so add in a bit of slop (128 bytes).
+          //
+          // We allocate this buffer right before calling the enclave client with it, to minimize
+          // the lifetime of the buffer, since it could be rather large.
+          final ByteBuffer out = ByteBuffer.allocateDirect(requestSize * 5 + 128);
+          return enclave.clientRun(this, permitsUsed, ack, out);
+        });
   }
 
   /** Closes (asynchronously) the underlying resources utilized by this client.
