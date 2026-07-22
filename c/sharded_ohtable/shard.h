@@ -124,19 +124,31 @@ u64* shard_request_records(sharded_ohtable_request* r);
  * @brief  Listens to a request queue for inserts and queries and processses them.
  * Run by shard worker thread.
  *
+ * At most one worker may run a given shard at a time. If a worker is already
+ * running this shard, returns err_SHARD__ALREADY_RUNNING without touching the
+ * queue. Callers must not assume the shard is being serviced unless this
+ * returns err_SUCCESS.
+ *
  * @param shard
+ * @return err_SUCCESS after a clean stop, err_SHARD__ALREADY_RUNNING if this
+ *         shard already has a worker.
  */
-void shard_run(shard *shard);
+error_t shard_run(shard *shard);
 
 /**
  * @brief Signals a running shard to stop. Shard will process and respond to all previous queires
  * before stopping.
  *
- * Blocks until the shard has stopped.
+ * Blocks until the worker has handled the stop request. The worker releases the
+ * shard just after that, so join its thread before running the shard again. A
+ * shard with no worker cannot be stopped, and only one stop may be in flight at
+ * a time; in both cases this returns without queueing anything.
  *
  * @param shard
+ * @return err_SUCCESS once the worker has stopped, err_SHARD__NOT_RUNNING if
+ *         the shard has no worker or is already stopping.
  */
-void shard_stop(shard *shard);
+error_t shard_stop(shard *shard);
 /**
  * @brief Collect health statistics about this shard's table.
  * 

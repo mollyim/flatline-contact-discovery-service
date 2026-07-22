@@ -68,7 +68,9 @@ void* shard_thread_fn(void *input) {
 
     TEST_LOG("shard_thread_fn(%p, %lu) before call enclave", oe_enclave, shard_id);
     oe_result_t result = enclave_run_shard(oe_enclave, &retval, shard_id);
-    LOG_WARN("Returned from enclave_run_shard on shard %zu with oe_result %d", shard_id, result);
+    // retval is the enclave-side error_t (e.g. err_SHARD__ALREADY_RUNNING).
+    LOG_WARN("Returned from enclave_run_shard on shard %zu with oe_result %d, enclave err %d",
+             shard_id, result, retval);
 
     atomic_fetch_add(&cdsi_enclave->running_shard_threads, -1);
 

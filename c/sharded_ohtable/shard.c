@@ -9,6 +9,15 @@
 #include "shard.h"
 #include "util/util.h"
 
+// Ownership of a shard's worker slot. IDLE -> RUNNING is claimed by shard_run(),
+// RUNNING -> STOPPING by shard_stop(); the worker returns to IDLE as it exits.
+enum shard_worker_state
+{
+    SHARD_WORKER_IDLE = 0,
+    SHARD_WORKER_RUNNING,
+    SHARD_WORKER_STOPPING,
+};
+
 // struct shard layout - Jasmin only accesses lb, ub fields.
 // Jasmin is the source of truth; validated at runtime by shard_validate_layout().
 struct shard
@@ -19,6 +28,10 @@ struct shard
     int keep_alive;
     ohtable *table;
     queue *requests;
+    // Worker slot ownership, one of enum shard_worker_state. Must stay at the
+    // end of the struct: Jasmin owns the lb/ub offsets, checked by
+    // shard_validate_layout().
+    int running;
 };
 
 // Validate C layout matches Jasmin. Called at startup.
@@ -265,24 +278,59 @@ void shard_handle_request(shard *shard, sharded_ohtable_request *req)
     if (req->wait) shard_waiter_finish(req->wait);
 }
 
-void shard_run(shard *shard)
+error_t shard_run(shard *shard)
 {
+    // At most one worker per shard. Refuse to start if one is already running.
+    int expected = SHARD_WORKER_IDLE;
+    if (!__atomic_compare_exchange_n(
+            &shard->running, &expected, SHARD_WORKER_RUNNING, false,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return err_SHARD__ALREADY_RUNNING;
+    }
+
     shard->keep_alive = 1;
     while (shard->keep_alive)
     {
         sharded_ohtable_request *req = shard_next_request(shard);
         shard_handle_request(shard, req);
     }
+
+    // Release on exit so the shard can be run again after a stop.
+    // The loop only exits via the stop request, which shard_stop() enqueues
+    // after moving us RUNNING -> STOPPING, so `running` is necessarily STOPPING
+    // here. Compare-exchange rather than a bare store to assert that.
+    expected = SHARD_WORKER_STOPPING;
+    CHECK(__atomic_compare_exchange_n(
+        &shard->running, &expected, SHARD_WORKER_IDLE, false,
+        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+    return err_SUCCESS;
 }
-void shard_stop(shard *shard)
+error_t shard_stop(shard *shard)
 {
-    shard->keep_alive = 0;
+    // Only a running worker dequeues the stop request below. Claim the worker
+    // slot first: with no worker, or with a stop already in flight, nothing
+    // would consume the request and the wait below would never return.
+    int expected = SHARD_WORKER_RUNNING;
+    if (!__atomic_compare_exchange_n(
+            &shard->running, &expected, SHARD_WORKER_STOPPING, false,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return err_SHARD__NOT_RUNNING;
+    }
+
+    // Don't clear keep_alive here: if the worker sees it cleared before it
+    // dequeues the stop request below, it exits without signalling our waiter
+    // and this blocks forever. The worker clears it itself when it handles
+    // shard_request_stop, which is paired with signalling the waiter.
     shard_request_waiter* w = shard_waiter_create();
     sharded_ohtable_request *req = shard_request_create(shard_request_stop, NULL, w, 0);
     CHECK(err_SUCCESS == queue_add_item(shard->requests, req));
     shard_request_waiter_wait(w);
+    // shard_destroy() also completes pending requests, so the waiter returning
+    // does not by itself mean the worker stopped cleanly.
+    error_t err = req->err;
     shard_waiter_destroy(w);
     shard_request_destroy(req);
+    return err;
 }
 
 #ifdef IS_TEST
@@ -404,10 +452,89 @@ int test_shard_handle_request()
     return err_SUCCESS;
 }
 
+// Returns shard_run()'s error_t as a pointer-sized value the joiner can read.
+static void* worker_thread(void* v_shard) {
+    shard* shard = v_shard;
+    return (void*)(uintptr_t)shard_run(shard);
+}
+
+// A second worker for an already-running shard is refused; the running worker
+// keeps serving; ownership is released on stop so the shard can run again.
+int test_shard_rejects_duplicate_worker()
+{
+    shard *shard = shard_create(0, UINT64_MAX, RECORD_SIZE_QWORDS, getentropy);
+
+    // First worker takes ownership of the shard.
+    pthread_t first_tid;
+    pthread_create(&first_tid, NULL, worker_thread, shard);
+
+    // Wait until the first worker is definitely inside its loop, so that the
+    // second attempt below races against a genuinely running worker.
+    shard_wait(shard);
+
+    // Second worker must be refused rather than joining the queue.
+    pthread_t second_tid;
+    pthread_create(&second_tid, NULL, worker_thread, shard);
+    void *second_retval;
+    pthread_join(second_tid, &second_retval);
+    TEST_ASSERT((error_t)(uintptr_t)second_retval == err_SHARD__ALREADY_RUNNING);
+
+    // The original worker is unaffected and still services requests.
+    u64 query_record[RECORD_SIZE_QWORDS] = {1234, 0, 0, 0, 0, 0, 0};
+    sharded_ohtable_request* req = shard_query(shard, query_record, 1);
+    shard_wait(shard);
+    TEST_ERR(req->err);
+    shard_request_destroy(req);
+
+    // After a clean stop, ownership is released and the shard can run again.
+    shard_stop(shard);
+    void *first_retval;
+    pthread_join(first_tid, &first_retval);
+    TEST_ASSERT((error_t)(uintptr_t)first_retval == err_SUCCESS);
+
+    pthread_t restart_tid;
+    pthread_create(&restart_tid, NULL, worker_thread, shard);
+    shard_wait(shard);
+    shard_stop(shard);
+    void *restart_retval;
+    pthread_join(restart_tid, &restart_retval);
+    TEST_ASSERT((error_t)(uintptr_t)restart_retval == err_SUCCESS);
+
+    shard_destroy(shard);
+    return 0;
+}
+
+// Stopping a shard that has no worker is refused instead of queueing a request
+// nothing will ever dequeue.
+int test_shard_stop_requires_running_worker()
+{
+    shard *shard = shard_create(0, UINT64_MAX, RECORD_SIZE_QWORDS, getentropy);
+
+    // No worker has ever run this shard.
+    TEST_ASSERT(shard_stop(shard) == err_SHARD__NOT_RUNNING);
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, worker_thread, shard);
+    shard_wait(shard);
+
+    TEST_ERR(shard_stop(shard));
+    void *retval;
+    pthread_join(tid, &retval);
+    TEST_ASSERT((error_t)(uintptr_t)retval == err_SUCCESS);
+
+    // The worker released the shard as it exited, so there is nothing left to stop.
+    TEST_ASSERT(shard_stop(shard) == err_SHARD__NOT_RUNNING);
+
+    shard_destroy(shard);
+    return 0;
+}
+
 void run_shard_tests()
 {
     RUN_TEST(test_shard_receives_inserts_mt());
     RUN_TEST(test_shard_receives_queries_mt());
     RUN_TEST(test_shard_handle_request());
+    RUN_TEST(test_shard_rejects_duplicate_worker());
+    RUN_TEST(test_shard_stop_requires_running_worker());
 }
 #endif // IS_TEST

@@ -296,17 +296,17 @@ void sharded_ohtable_clear(sharded_ohtable *table)
     }
 }
 
-void sharded_ohtable_run_shard(sharded_ohtable *table, size_t shard_id)
+error_t sharded_ohtable_run_shard(sharded_ohtable *table, size_t shard_id)
 {
     CHECK(shard_id < table->num_shards);
-    shard_run(table->shards[shard_id]);
+    return shard_run(table->shards[shard_id]);
 }
 
-void sharded_ohtable_stop_shard(sharded_ohtable *table, size_t shard_id)
+error_t sharded_ohtable_stop_shard(sharded_ohtable *table, size_t shard_id)
 {
     TEST_LOG("Stopping shard %ld", shard_id);
     CHECK(shard_id < table->num_shards);
-    shard_stop(table->shards[shard_id]);
+    return shard_stop(table->shards[shard_id]);
 }
 
 error_t sharded_ohtable_put_batch(

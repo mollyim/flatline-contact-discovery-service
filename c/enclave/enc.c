@@ -215,12 +215,20 @@ done:
 int enclave_stop_shards()
 {
   RETURN_IF_ERROR(check_init_complete());
+  error_t err = err_SUCCESS;
   for (size_t i = 0; i < g_num_shards; ++i)
   {
     ENC_LOG_DEBUG("Stopping shard %zu\n", i);
-    sharded_ohtable_stop_shard(g_table, i);
+    // A shard with no worker is already in the state this call is asking for.
+    // Try every shard regardless of what the others report: failing one must
+    // not leave the rest running.
+    error_t shard_err = sharded_ohtable_stop_shard(g_table, i);
+    if (shard_err != err_SUCCESS && shard_err != err_SHARD__NOT_RUNNING && err == err_SUCCESS)
+    {
+      err = shard_err;
+    }
   }
-  return err_SUCCESS;
+  return err;
 }
 
 typedef struct {
@@ -711,7 +719,8 @@ client_unlock:
 int enclave_run_shard(size_t shard_id)
 {
   RETURN_IF_ERROR(check_init_complete());
-  sharded_ohtable_run_shard(g_table, shard_id);
+  // err_SHARD__ALREADY_RUNNING if this shard already has a worker.
+  RETURN_IF_ERROR(sharded_ohtable_run_shard(g_table, shard_id));
   return err_SUCCESS;
 }
 

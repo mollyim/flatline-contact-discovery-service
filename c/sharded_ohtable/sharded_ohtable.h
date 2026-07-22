@@ -53,7 +53,9 @@ void sharded_ohtable_clear(sharded_ohtable *table);
  * @param table Table with shard to start.
  * @param shard_id ID of shard to start
  */
-void sharded_ohtable_run_shard(sharded_ohtable *table, size_t shard_id);
+// Runs the worker loop for `shard_id`. At most one worker may run a given
+// shard; returns err_SHARD__ALREADY_RUNNING if one is already active.
+error_t sharded_ohtable_run_shard(sharded_ohtable *table, size_t shard_id);
 
 /**
  * @brief Signal a shard to stop running and return.
@@ -63,8 +65,10 @@ void sharded_ohtable_run_shard(sharded_ohtable *table, size_t shard_id);
  *
  * @param table Table with shard to stop.
  * @param shard_id ID of shard to stop.
+ * @return err_SUCCESS once the worker has stopped, err_SHARD__NOT_RUNNING if the
+ *         shard has no worker or is already stopping.
  */
-void sharded_ohtable_stop_shard(sharded_ohtable *table, size_t shard_id);
+error_t sharded_ohtable_stop_shard(sharded_ohtable *table, size_t shard_id);
 
 /**
  * @brief Put multiple records into the table.
