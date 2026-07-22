@@ -364,35 +364,6 @@ JNIEXPORT void JNICALL Java_org_signal_cdsi_enclave_Enclave_nativeClientRun
   TEST_LOG("%p,%p: Run success", cdsi_enc->enc, (void*)cli);
 }
 
-JNIEXPORT void JNICALL Java_org_signal_cdsi_enclave_Enclave_nativeClientRetryResponse
-  (JNIEnv *env, jclass c, jlong enc, jlong cli, jint retry_after_secs, jobject out) {
-  cdsi_enclave_t* cdsi_enc = (cdsi_enclave_t*)enc;
-  TEST_LOG("%p,%p: Retry response", cdsi_enc->enc, (void*)cli);
-  size_t out_size = (*env)->GetDirectBufferCapacity(env, out);
-  size_t actual_out_size = 0;
-
-  int retval = 0;
-  oe_result_t oe_result = enclave_retry_response(
-    cdsi_enc->enc,
-    &retval,
-    cli,
-    retry_after_secs,
-    out_size,
-    (*env)->GetDirectBufferAddress(env, out),
-    &actual_out_size
-  );
-  if (oe_result != OE_OK) {
-    throw_oe_error(env, "enclave_retry_response", oe_result);
-    return;
-  } else if (retval != 0) {
-    TEST_LOG("%p,%p: Run error: %d", cdsi_enc->enc, (void*)cli, retval);
-    throw_error(env, retval);
-    return;
-  }
-  limit_buffer(env, out, actual_out_size);
-  TEST_LOG("%p,%p: Retry response success", (void*)enc, (void*)cli);
-}
-
 JNIEXPORT void JNICALL Java_org_signal_cdsi_enclave_Enclave_nativeClientClose
   (JNIEnv *env, jclass c, jlong enc, jlong cli) {
   cdsi_enclave_t* cdsi_enc = (cdsi_enclave_t*)enc;

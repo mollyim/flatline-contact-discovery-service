@@ -431,49 +431,6 @@ free_client:
   return err;
 }
 
-int enclave_retry_response(
-    uint64_t cli,
-    uint32_t retry_after_secs,
-    size_t out_size,
-    unsigned char *out,
-    size_t *actual_out_size)
-{
-  RETURN_IF_ERROR(check_init_complete());
-  client_t *c;
-  RETURN_IF_ERROR(client_get(cli, &c));
-  error_t err = err_SUCCESS;
-  if (c->send == NULL || c->recv == NULL)
-  {
-    err = err_ENCLAVE__GENERAL__CLIENT_STATE;
-    goto client_unlock;
-  }
-
-  TEST_LOG("enclave_retry_response(): proto response encoding into %zu bytes", out_size);
-  unsigned char workspace[128];
-  struct org_signal_cdsi_client_response_t *rsp = org_signal_cdsi_client_response_new(workspace, sizeof(workspace));
-  GOTO_IF_ERROR(err = (rsp != NULL ? err_SUCCESS : err_ENCLAVE__RETRYRESPONSE__RESPONSE_PB_NEW), client_unlock);
-  rsp->retry_after_secs = retry_after_secs;
-
-  // Encrypt response containing a retry-after
-  uint8_t *plaintext_buf;
-  GOTO_IF_ERROR(err = MALLOCZ_SIZE(plaintext_buf, out_size), client_unlock);
-  *actual_out_size = out_size;
-  int rsp_size = org_signal_cdsi_client_response_encode(rsp, plaintext_buf, out_size);
-  if (rsp_size < 0)
-  {
-    TEST_LOG("enclave_retry_response(): org_signal_cdsi_client_response_encode failure: %d", rsp_size);
-    err = err_ENCLAVE__RETRYRESPONSE__RESPONSE_PB_ENCODE;
-  }
-  else
-  {
-    err = noise_encrypt_message(c->send, plaintext_buf, rsp_size, out, actual_out_size);
-  }
-  free(plaintext_buf);
-client_unlock:
-  client_setstate(c, CLIENT_INUSE, CLIENT_UNUSED);
-  return err;
-}
-
 int enclave_rate_limit(
     uint64_t cli,
     size_t in_size,
