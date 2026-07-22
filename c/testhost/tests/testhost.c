@@ -315,23 +315,17 @@ int test_first_request(oe_enclave_t *enclave)
     ENCLAVE_TEST_ERR(retval);
 
     // check health statistics for anomalies
-    ohtable_statistics stats[NUM_SHARDS];
-    uint8_t stats_pb[NUM_SHARDS*14*50 + 128];
+    ohtable_statistics stats = {0};
+    uint8_t stats_pb[2*50 + 128];
     size_t actual_out;
     OPEN_ENCLAVE_CALL_TEST_ERR(enclave_table_statistics(enclave, &retval, sizeof(stats_pb), stats_pb, &actual_out));
     ENCLAVE_TEST_ERR(retval);
 
-    ENCLAVE_TEST_ERR(decode_statistics(actual_out, stats_pb, stats, NUM_SHARDS));
-
-    size_t total_records = 0;
-    for(size_t i = 0; i < NUM_SHARDS; ++i) {
-        TEST_LOG("num_items: %zu max_overflow: %zu max_trace: %zu mean_overflow: %lf",
-            stats[i].num_items, stats[i].max_stash_overflow_count, stats[i].max_trace_length, ((double)stats[i].sum_stash_overflow_count)/stats[i].oram_access_count);
-        total_records += stats[i].num_items;
-    }
+    ENCLAVE_TEST_ERR(decode_statistics(actual_out, stats_pb, &stats));
+    TEST_LOG("num_items: %zu capacity: %zu", stats.num_items, stats.capacity);
 
     // We inserted 5000 records, and each shard has a default "0" record inserted at creation
-    TEST_ASSERT(total_records == 5000 + NUM_SHARDS);
+    TEST_ASSERT(stats.num_items == 5000 + NUM_SHARDS);
     return retval;
 }
 

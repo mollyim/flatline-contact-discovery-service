@@ -239,11 +239,13 @@ int enclave_table_statistics(
     size_t *actual_out_size) {
   RETURN_IF_ERROR(check_init_complete());
 
-  const size_t num_fields = 14;
+  // Table-wide totals, reported as a single entry. Per-shard values are not
+  // exported.
+  const size_t num_fields = 2;
   const size_t max_field_name_len = 32;
   size_t workspace_size = PBUTIL_WORKSPACE_BASE(struct org_signal_cdsi_table_statistics_t)
-    + g_num_shards * (sizeof(struct org_signal_cdsi_shard_statistics_t)
-           + num_fields*( sizeof(struct org_signal_cdsi_value_t) + max_field_name_len));
+    + sizeof(struct org_signal_cdsi_shard_statistics_t)
+    + num_fields*( sizeof(struct org_signal_cdsi_value_t) + max_field_name_len);
   uint8_t *workspace;
   RETURN_IF_ERROR(MALLOCZ_SIZE(workspace, workspace_size));
   error_t err = err_SUCCESS;
@@ -255,46 +257,33 @@ int enclave_table_statistics(
     err = err_ENCLAVE__TABLE_STATISTICS__RESPONSE_PB_NEW;
     goto finish;
   }
-  int allocated = org_signal_cdsi_table_statistics_shard_statistics_alloc(rsp, g_num_shards);
+  int allocated = org_signal_cdsi_table_statistics_shard_statistics_alloc(rsp, 1);
   if (allocated < 0) {
     err = err_ENCLAVE__TABLE_STATISTICS__RESPONSE_PB_ALLOC_SHARDS;
     goto finish;
   }
+  int alloc_vals = org_signal_cdsi_shard_statistics_values_alloc(rsp->shard_statistics.items_p, num_fields);
+  if (alloc_vals < 0) {
+    err = err_ENCLAVE__TABLE_STATISTICS__RESPONSE_PB_ALLOC_VALUES;
+    goto finish;
+  }
 
+  uint64_t num_items = 0;
+  uint64_t capacity = 0;
   for(size_t i = 0; i < g_num_shards; ++i) {
-    int alloc_vals = org_signal_cdsi_shard_statistics_values_alloc(rsp->shard_statistics.items_p + i, num_fields);
-
-    if (alloc_vals < 0) {
-      err = err_ENCLAVE__TABLE_STATISTICS__RESPONSE_PB_ALLOC_SHARDS;
-      goto finish;
-    }
     TEST_LOG("num_items: %zu max_overflow: %zu max_trace: %zu mean_overflow: %lf",
             stats[i]->num_items, stats[i]->max_stash_overflow_count, stats[i]->max_trace_length, ((double)stats[i]->sum_stash_overflow_count)/stats[i]->oram_access_count);
+    num_items += stats[i]->num_items;
+    capacity += stats[i]->capacity;
+  }
 
-    counter_t counters[] = {
-      { .name = "max_trace_length", .val = stats[i]->max_trace_length},
-      { .name = "total_displacement", .val = stats[i]->total_displacement},
-      { .name = "num_items", .val = stats[i]->num_items},
-      { .name = "capacity", .val = stats[i]->capacity},
-      { .name = "oram_recursion_depth", .val = stats[i]->oram_recursion_depth},
-      { .name = "oram_access_count", .val = stats[i]->oram_access_count},
-      { .name = "stash_overflow_count", .val = stats[i]->stash_overflow_count},
-      { .name = "max_stash_overflow_count", .val = stats[i]->max_stash_overflow_count},
-      { .name = "sum_stash_overflow_count", .val = stats[i]->sum_stash_overflow_count},
-      { .name = "posmap_stash_overflow_count", .val = stats[i]->posmap_stash_overflow_count},
-      { .name = "posmap_max_stash_overflow_count", .val = stats[i]->posmap_max_stash_overflow_count},
-      { .name = "posmap_stash_overflow_count", .val = stats[i]->posmap_stash_overflow_count},
-      // The next two fields are doubles - exponential moving averages of stash overflow size with a half-life of 10,000.
-      // We want the double precision for computation, but really only care about the first few digits for reporting.
-      // Instead of creating floating point values for the protobuf, multiply by 10K and store as an integer.
-      { .name = "stash_overflow_ema10k", .val = stats[i]->stash_overflow_ema10k * 10000},
-      { .name = "posmap_stash_overflow_ema10k", .val = stats[i]->posmap_stash_overflow_ema10k * 10000},
-      { .name = NULL }
-    };
-
-    for(size_t j = 0; counters[j].name != NULL; ++j) {
-      write_stat_value(rsp->shard_statistics.items_p[i].values.items_p + j, counters[j].name, counters[j].val);
-    }
+  counter_t counters[] = {
+    { .name = "num_items", .val = num_items},
+    { .name = "capacity", .val = capacity},
+    { .name = NULL }
+  };
+  for(size_t j = 0; counters[j].name != NULL; ++j) {
+    write_stat_value(rsp->shard_statistics.items_p[0].values.items_p + j, counters[j].name, counters[j].val);
   }
 
   int size = org_signal_cdsi_table_statistics_encode(rsp, out, out_size);
@@ -428,49 +417,6 @@ unlock_handshake:
   pthread_rwlock_unlock(&g_handshakestart_mu);
 free_client:
   if (err != err_SUCCESS) client_free(c);
-  return err;
-}
-
-int enclave_retry_response(
-    uint64_t cli,
-    uint32_t retry_after_secs,
-    size_t out_size,
-    unsigned char *out,
-    size_t *actual_out_size)
-{
-  RETURN_IF_ERROR(check_init_complete());
-  client_t *c;
-  RETURN_IF_ERROR(client_get(cli, &c));
-  error_t err = err_SUCCESS;
-  if (c->send == NULL || c->recv == NULL)
-  {
-    err = err_ENCLAVE__GENERAL__CLIENT_STATE;
-    goto client_unlock;
-  }
-
-  TEST_LOG("enclave_retry_response(): proto response encoding into %zu bytes", out_size);
-  unsigned char workspace[128];
-  struct org_signal_cdsi_client_response_t *rsp = org_signal_cdsi_client_response_new(workspace, sizeof(workspace));
-  GOTO_IF_ERROR(err = (rsp != NULL ? err_SUCCESS : err_ENCLAVE__RETRYRESPONSE__RESPONSE_PB_NEW), client_unlock);
-  rsp->retry_after_secs = retry_after_secs;
-
-  // Encrypt response containing a retry-after
-  uint8_t *plaintext_buf;
-  GOTO_IF_ERROR(err = MALLOCZ_SIZE(plaintext_buf, out_size), client_unlock);
-  *actual_out_size = out_size;
-  int rsp_size = org_signal_cdsi_client_response_encode(rsp, plaintext_buf, out_size);
-  if (rsp_size < 0)
-  {
-    TEST_LOG("enclave_retry_response(): org_signal_cdsi_client_response_encode failure: %d", rsp_size);
-    err = err_ENCLAVE__RETRYRESPONSE__RESPONSE_PB_ENCODE;
-  }
-  else
-  {
-    err = noise_encrypt_message(c->send, plaintext_buf, rsp_size, out, actual_out_size);
-  }
-  free(plaintext_buf);
-client_unlock:
-  client_setstate(c, CLIENT_INUSE, CLIENT_UNUSED);
   return err;
 }
 

@@ -84,13 +84,7 @@ pthread_t run_shard(oe_enclave_t *enclave, size_t shard_id)
 }
 
 static void print_table_stats(const ohtable_statistics* stats) {
-    fprintf(stderr, "TABLE num_items: %zu capacity: %zu mean_displacement: %lf max_trace: %zu\n",
-            stats->num_items, stats->capacity, ((double)stats->total_displacement)/stats->num_items, stats->max_trace_length);
-    fprintf(stderr, "ORAM overview\n access_count: %zu  num_levels: %zu\n", stats->oram_access_count, stats->oram_recursion_depth);
-    fprintf(stderr, "ORAM health\n stash size (EMA10K): %lf  stash max: %zu stash size: %zu mean stash size: %lf\n",
-            stats->stash_overflow_ema10k, stats->max_stash_overflow_count, stats->stash_overflow_count, ((double)stats->sum_stash_overflow_count)/stats->oram_access_count);
-    fprintf(stderr, "Position map ORAM health\n stash size (EMA10K): %lf  stash max: %zu stash size: %zu\n",
-            stats->posmap_stash_overflow_ema10k, stats->posmap_max_stash_overflow_count, stats->posmap_stash_overflow_count);
+    fprintf(stderr, "TABLE num_items: %zu capacity: %zu\n", stats->num_items, stats->capacity);
 }
 
 static int cmpu64(const void* a, const void* b) {
@@ -155,19 +149,16 @@ int main(int argc, const char *argv[])
 
     ENCLAVE_TEST_ERR(test_data_load(enclave, NUM_RECORDS_TO_LOAD, num_sample_batches, batch_size, samples));
 
-    ohtable_statistics stats[NUM_SHARDS];
-    uint8_t stats_pb[NUM_SHARDS*14*50 + 128];
+    ohtable_statistics stats = {0};
+    uint8_t stats_pb[2*50 + 128];
     size_t actual_out;
     OPEN_ENCLAVE_CALL_TEST_ERR(enclave_table_statistics(enclave, &retval, sizeof(stats_pb), stats_pb, &actual_out));
     ENCLAVE_TEST_ERR(retval);
 
-    ENCLAVE_TEST_ERR(decode_statistics(actual_out, stats_pb, stats, NUM_SHARDS));
+    ENCLAVE_TEST_ERR(decode_statistics(actual_out, stats_pb, &stats));
 
     TEST_LOG("\nTABLE statistics after load");
-    for(size_t i = 0; i < NUM_SHARDS; ++i) {
-        fprintf(stderr, "\nSHARD %zu STATS\n", i);
-        print_table_stats(stats + i);
-    }
+    print_table_stats(&stats);
 
     // prep e164s
     for(size_t i = 0; i < num_sample_batches * batch_size; ++i) {

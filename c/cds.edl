@@ -52,13 +52,6 @@ enclave {
                         [out, size=out_size] unsigned char* out,
                         [out, size=8] size_t* actual_out_size);
 
-        public int enclave_retry_response(
-                        uint64_t cli,
-                        uint32_t retry_after_secs,
-                        size_t out_size,
-                        [out, size=out_size] unsigned char* out,
-                        [out, size=8] size_t* actual_out_size);
-
         public int enclave_run_shard(size_t shard_id);
 
 

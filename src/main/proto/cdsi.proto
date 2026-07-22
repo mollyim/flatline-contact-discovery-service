@@ -47,9 +47,8 @@ message ClientResponse {
   // leakage based on the size of the encrypted output.
   bytes e164_pni_aci_triples = 1;
 
-  // DEPRECATED: The host no longer ever generates retry responses, so this field
-  // may be removed in a future revision to the enclave
-  int32 retry_after_secs = 2 [deprecated = true];
+  // int32 retry_after_secs = 2 [deprecated]
+  reserved 2;
 
   // A token which allows subsequent calls' rate limiting to discount the
   // e164s sent up in this request, only counting those in the next

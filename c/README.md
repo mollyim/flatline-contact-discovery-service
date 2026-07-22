@@ -18,7 +18,7 @@ connection and submit a query.
 
 The administrative calls are: `enclave_init`, `enclave_stop_shards`, `enclave_run_shard`, `enclave_load_pb`, `enclave_attest`, and `enclave_table_statistics`.
 
-The client calls are: `enclave_new_client`, `enclave_close_client`, `enclave_handshake`, `enclave_rate_limit`, `enclave_run`, and `enclave_retry_response`
+The client calls are: `enclave_new_client`, `enclave_close_client`, `enclave_handshake`, `enclave_rate_limit`, and `enclave_run`
 
 
 These are implemented in [/enclave/enc.c](./enclave/enc.c) and can be seen in use in 

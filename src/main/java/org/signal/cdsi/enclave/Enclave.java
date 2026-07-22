@@ -557,18 +557,6 @@ public class Enclave implements AutoCloseable {
       Buffer outFinalResponse)
       throws EnclaveException;
 
-  /** Create a retry response for the client with the indicated retry time
-   *
-   * @param enclaveHandle Enclave to use
-   * @param clientHandle Client to use
-   * @param outFinalResponse Noise-encrypted serialized ClientResponse containing a retry_after_secs
-   */
-  private static native void nativeClientRetryResponse(
-      long enclaveHandle, long clientHandle,
-      int retryAfterSecs,
-      Buffer outFinalResponse)
-      throws EnclaveException;
-
   /** Discard a client handle, cleaning up any state associated with it.
    *
    * @param enclaveHandle Enclave to use
