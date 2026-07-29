@@ -250,7 +250,7 @@ class DynamoDbAccountPopulator implements AccountPopulator, SubscribeToShardResp
   }
 
   /**
-   * If the item attributes indicate the account is canonically discoverable, returns a {@code DirectoryEntry},
+   * If the item has a phone number and indicates the account is canonically discoverable, returns a {@code DirectoryEntry},
    * else {@code null}.
    * <br>
    * Note: should only be used for the initial directory load, when there is no point in sending a deletion entry,
@@ -258,20 +258,25 @@ class DynamoDbAccountPopulator implements AccountPopulator, SubscribeToShardResp
    */
   @Nullable
   private static DirectoryEntry directoryInsertEntryFromItem(final Map<String, AttributeValue> item) {
-    final long e164 = e164FromString(item.get(ATTR_ACCOUNT_E164).s());
+
     final boolean canonicallyDiscoverable = item.containsKey(ATTR_CANONICALLY_DISCOVERABLE) &&
         item.get(ATTR_CANONICALLY_DISCOVERABLE).bool();
-
-    if (canonicallyDiscoverable) {
-      final byte[] aci = item.get(KEY_ACCOUNT_UUID).b().asByteArray();
-      final byte[] pni = item.get(ATTR_PNI).b().asByteArray();
-      final byte[] uak = item.containsKey(ATTR_UAK) && item.get(ATTR_UAK).b() != null ?
-          item.get(ATTR_UAK).b().asByteArray() : null;
-
-      return new DirectoryEntry(e164, aci, pni, uak);
-    } else {
+    if (!canonicallyDiscoverable) {
       return null;
     }
+
+    final AttributeValue e164Attribute = item.get(ATTR_ACCOUNT_E164);
+    if (e164Attribute == null) {
+      return null;
+    }
+    final long e164 = e164FromString(e164Attribute.s());
+
+    final byte[] aci = item.get(KEY_ACCOUNT_UUID).b().asByteArray();
+    final byte[] pni = item.get(ATTR_PNI).b().asByteArray();
+    final byte[] uak = item.containsKey(ATTR_UAK) && item.get(ATTR_UAK).b() != null ?
+        item.get(ATTR_UAK).b().asByteArray() : null;
+
+    return new DirectoryEntry(e164, aci, pni, uak);
   }
 
   @VisibleForTesting
@@ -348,6 +353,8 @@ class DynamoDbAccountPopulator implements AccountPopulator, SubscribeToShardResp
 
       for (final Record record : event.records()) {
         try {
+          // Not all accounts have the fields in `Account` (e164 in particular), however updates without the
+          // relevant fields should be filtered before going into kinesis.
           final Account account = OBJECT_MAPPER.readValue(record.data().asUtf8String(), Account.class);
 
           final DirectoryEntry directoryEntry = account.canonicallyDiscoverable() ?

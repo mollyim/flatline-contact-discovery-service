@@ -114,6 +114,30 @@ class DynamoDbAccountPopulatorTest {
     assertEquals(expectedEntries, new HashSet<>(retrievedEntries));
   }
 
+  @Test
+  void getAccountSnapshotWithoutE164() {
+    final Set<DirectoryEntry> expectedEntries = insertRandomAccounts(10, true).stream()
+        .map(DynamoDbAccountPopulatorTest::directoryEntryFromAccount)
+        .collect(Collectors.toSet());
+
+    for (int i = 0; i < 10; i++) {
+      dynamoDbExtension.getDynamoDbClient().putItem(PutItemRequest.builder()
+          .tableName(ACCOUNTS_TABLE_NAME)
+          // Don't include e164/pni
+          .item(Map.of(
+              DynamoDbAccountPopulator.KEY_ACCOUNT_UUID,
+              AttributeValue.builder().b(SdkBytes.fromByteBuffer(UUIDUtil.toByteBuffer(UUID.randomUUID()))).build(),
+              DynamoDbAccountPopulator.ATTR_CANONICALLY_DISCOVERABLE,
+              AttributeValue.builder().bool(true).build()))
+          .build());
+    }
+
+    final List<DirectoryEntry> retrievedEntries = accountPopulator.getAccountSnapshot().collectList().block();
+
+    assertNotNull(retrievedEntries);
+    assertEquals(expectedEntries, new HashSet<>(retrievedEntries));
+  }
+
   private List<Account> insertRandomAccounts(final int accounts, final boolean canonicallyDiscoverable) {
     final List<Account> insertedAccounts = new ArrayList<>(accounts);
 
