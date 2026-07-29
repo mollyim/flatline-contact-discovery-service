@@ -73,6 +73,11 @@ class FilterCdsUpdatesHandlerTest {
             new Account("+12223334444", uuidBytes, true, pniBytes, null)));
   }
 
+  @Test
+  void testNoE164OrPni() {
+    fileInputOutput("testevent_no_e164.json", List.of());
+  }
+
   Account mapWithoutException(SdkBytes in) {
     try {
       return FilterCdsUpdatesHandler.OBJECT_MAPPER.readValue(in.asInputStream(), Account.class);

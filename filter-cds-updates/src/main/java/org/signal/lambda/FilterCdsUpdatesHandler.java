@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Filters DynamoDb record updates for the subset relevant to contact discovery, outputing them to Kinesis
@@ -80,6 +81,10 @@ public class FilterCdsUpdatesHandler implements RequestHandler<DynamodbEvent, Se
   @VisibleForTesting
   void processRecord(StreamRecord dbRecord) throws IOException {
     for (Account update : dbUpdatesFor(dbRecord)) {
+      if (update.e164 == null || update.pni == null) {
+        // Skip entries without an e164
+        continue;
+      }
       kinesisClient.putRecord(PutRecordRequest
           .builder()
           .data(SdkBytes.fromByteArray(OBJECT_MAPPER.writeValueAsBytes(update)))
@@ -101,7 +106,7 @@ public class FilterCdsUpdatesHandler implements RequestHandler<DynamodbEvent, Se
     }
     Account oldAccount = Account.fromItem(oldImage);
     Account newAccount = Account.fromItem(newImage);
-    if (!oldAccount.e164.equals(newAccount.e164)) {
+    if (!Objects.equals(oldAccount.e164, newAccount.e164)) {
       return List.of(oldAccount.forceNotInCds(), newAccount);
     }
     if (!oldAccount.equals(newAccount)) {

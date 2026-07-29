@@ -10,11 +10,13 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -35,6 +37,7 @@ class Account {
   static final String ATTR_UAK = "UAK";
 
   @JsonProperty
+  @Nullable
   String e164;
 
   @JsonProperty
@@ -44,9 +47,11 @@ class Account {
   boolean canonicallyDiscoverable;
 
   @JsonProperty
+  @Nullable
   byte[] pni;
 
   @JsonProperty
+  @Nullable
   byte[] uak;
 
   Account() {
@@ -62,28 +67,31 @@ class Account {
 
   static Account fromItem(Map<String, AttributeValue> item) {
     Preconditions.checkNotNull(item.get(KEY_ACCOUNT_UUID));
-    Preconditions.checkNotNull(item.get(ATTR_ACCOUNT_E164));
     byte[] uuid = new byte[16];
     item.get(KEY_ACCOUNT_UUID).getB().get(uuid);
-    byte[] pni = new byte[16];
-    item.get(ATTR_PNI_UUID).getB().get(pni);
 
-    byte[] uak;
-    final AttributeValue uakAttributeValue = item.get(ATTR_UAK);
-    if (uakAttributeValue != null) {
-    ByteBuffer uakBB = uakAttributeValue.getB();
-      uak = new byte[uakBB.remaining()];
-      uakBB.get(uak);
-    } else {
-      uak = null;
-    }
+    final AttributeValue e164AttributeValue = item.get(ATTR_ACCOUNT_E164);
+    final String e164 = e164AttributeValue != null ? e164AttributeValue.getS() : null;
+
+    final byte[] pni = bytesFrom(item.get(ATTR_PNI_UUID));
+    final byte[] uak = bytesFrom(item.get(ATTR_UAK));
 
     return new Account(
-        item.get(ATTR_ACCOUNT_E164).getS(),
+        e164,
         uuid,
         item.get(ATTR_CANONICALLY_DISCOVERABLE).getBOOL(),
         pni,
         uak);
+  }
+
+  private static byte[] bytesFrom(final AttributeValue attributeValue) {
+    if (attributeValue == null || attributeValue.getB() == null) {
+      return null;
+    }
+    final ByteBuffer bb = attributeValue.getB();
+    final byte[] bytes = new byte[bb.remaining()];
+    bb.get(bytes);
+    return bytes;
   }
 
   Account forceNotInCds() {
@@ -104,7 +112,7 @@ class Account {
       return false;
     Account account = (Account) o;
     return canonicallyDiscoverable == account.canonicallyDiscoverable &&
-        e164.equals(account.e164) &&
+        Objects.equals(e164, account.e164) &&
         Arrays.equals(uuid, account.uuid) &&
         Arrays.equals(pni, account.pni) &&
         Arrays.equals(uak, account.uak);
