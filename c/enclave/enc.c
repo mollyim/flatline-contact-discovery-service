@@ -351,24 +351,33 @@ int enclave_load_pb(
   size_t workspace_size = len + PBUTIL_WORKSPACE_BASE(struct org_signal_cdsi_enclave_load_t);
   uint8_t *workspace;
   RETURN_IF_ERROR(MALLOCZ_SIZE(workspace, workspace_size));
+  error_t err = err_SUCCESS;
+
   struct org_signal_cdsi_enclave_load_t *load_req = org_signal_cdsi_enclave_load_new(workspace, workspace_size);
   if (load_req == 0)
   {
-    return err_ENCLAVE__LOADPB__REQUEST_PB_NEW;
+    err = err_ENCLAVE__LOADPB__REQUEST_PB_NEW;
+    goto free_workspace;
   }
   int size = org_signal_cdsi_enclave_load_decode(load_req, load_request_pb, len);
   if (size < 0)
   {
-    return err_ENCLAVE__LOADPB__REQUEST_PB_DECODE;
+    err = err_ENCLAVE__LOADPB__REQUEST_PB_DECODE;
+    goto free_workspace;
   }
+  // The secret is optional.  An honest host sets it at startup and omits it
+  // from later loads, which arrives here as a zero-size field, so only a
+  // secret that is actually present replaces the stored one.  Do not turn a
+  // missing secret into an error: rate limiting is a service the host asks for
+  // rather than a property the enclave enforces on it, so there is nothing to
+  // gain by refusing to load a directory without one.
   if (load_req->shared_token_secret.size > 0)
   {
-    RETURN_IF_ERROR(ratelimit_set_shared_secret(
+    GOTO_IF_ERROR(err = ratelimit_set_shared_secret(
         load_req->shared_token_secret.size,
-        load_req->shared_token_secret.buf_p));
-  } else {
-    return err_ENCLAVE__LOADPB__NO_RATELIMIT_SECRET;
+        load_req->shared_token_secret.buf_p), free_workspace);
   }
+
   if (load_req->clear_all)
   {
     // clear the table
@@ -376,17 +385,20 @@ int enclave_load_pb(
     sharded_ohtable_clear(g_table);
   }
 
+  if (load_req->e164_aci_pni_uak_tuples.size % (sizeof(signal_user_record)) != 0)
+  {
+    err = err_ENCLAVE__LOADPB__TUPLES_INVALID;
+    goto free_workspace;
+  }
   signal_user_record *incoming_records = (signal_user_record *)load_req->e164_aci_pni_uak_tuples.buf_p;
   size_t num_records = load_req->e164_aci_pni_uak_tuples.size / (sizeof *incoming_records);
-  if (load_req->e164_aci_pni_uak_tuples.size % (sizeof *incoming_records) != 0)
-  {
-    return err_ENCLAVE__LOADPB__TUPLES_INVALID;
-  }
 
   // TEST_LOG("sharded_ohtable_put_batch:%zu", num_records);
-  error_t result = sharded_ohtable_put_batch(g_table, num_records, (u64 *)incoming_records);
+  err = sharded_ohtable_put_batch(g_table, num_records, (u64 *)incoming_records);
+
+free_workspace:
   free(workspace);
-  return result;
+  return err;
 }
 
 static void client_free(client_t* c) {

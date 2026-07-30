@@ -56,6 +56,7 @@ static error_t test_pb_workspace_for_decode() {
     TEST_ASSERT(req->aci_uak_pairs.size == 4*NUM_PAIRS*sizeof(pairs[0]));
     TEST_ASSERT(req->new_e164s.size == NUM_E164S*sizeof(e164s[0]));
     free(pb);
+    free(workspace);
     return err_SUCCESS;
 }
 
@@ -92,6 +93,7 @@ static error_t test_pb_workspace_for_encode() {
     int size = org_signal_cdsi_client_response_encode(rsp, output, output_size);
     TEST_ASSERT(size > 0);
     free(output);
+    free(rsp->e164_pni_aci_triples.buf_p);
     free(response_workspace);
 
     return err_SUCCESS;

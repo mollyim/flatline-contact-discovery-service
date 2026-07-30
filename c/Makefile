@@ -262,6 +262,7 @@ TESTS=\
     noiseutil/noise.test \
     sharded_ohtable/sharded_ohtable.test \
     halfsiphash/halfsiphash.test \
+    proto/pbutil.test \
 ##TESTS
 
 

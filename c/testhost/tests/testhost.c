@@ -492,6 +492,84 @@ int test_client_released_on_state_rejection(oe_enclave_t* enclave)
     return 0;
 }
 
+typedef enum {
+    load_normal,      // one record, secret present
+    load_no_secret,   // one record, shared_token_secret omitted
+    load_bad_tuples,  // tuple bytes are not a whole number of records
+} minimal_load_kind;
+
+// Sends a minimal enclave_load_pb request carrying a single record.
+static int send_minimal_load(oe_enclave_t *enclave, minimal_load_kind kind, int *retval)
+{
+    signal_user_record record;
+    memset(&record, 0, sizeof(record));
+    record.e164 = 1;
+    record.aci[0] = 1;
+    record.pni[0] = 2;
+    record.uak[0] = 3;
+
+    uint8_t workspace[1024];
+    uint8_t encoded[256];
+    uint8_t secret[1] = {1};
+
+    struct org_signal_cdsi_enclave_load_t *load_req =
+        org_signal_cdsi_enclave_load_new(workspace, sizeof(workspace));
+    ENCLAVE_TEST_ASSERT(load_req != 0);
+
+    load_req->clear_all = false;
+    load_req->e164_aci_pni_uak_tuples.buf_p = (uint8_t *)&record;
+    load_req->e164_aci_pni_uak_tuples.size =
+        (kind == load_bad_tuples) ? sizeof(record) - 1 : sizeof(record);
+    if (kind != load_no_secret)
+    {
+        load_req->shared_token_secret.size = sizeof(secret);
+        load_req->shared_token_secret.buf_p = secret;
+    }
+
+    int len = org_signal_cdsi_enclave_load_encode(load_req, encoded, sizeof(encoded));
+    ENCLAVE_TEST_ASSERT(len > 0);
+    ENCLAVE_TEST_ASSERT(0 == enclave_load_pb(enclave, retval, len, encoded));
+    return 0;
+}
+
+// The shared token secret is optional.  Hosts set it once and leave it out of
+// later loads, so a load carrying no secret must still be accepted and must
+// leave the stored secret alone.
+int test_load_pb_secret_is_optional(oe_enclave_t *enclave)
+{
+    int retval = err_SUCCESS;
+
+    TEST_LOG("Load carrying a secret");
+    ENCLAVE_TEST_ASSERT(0 == send_minimal_load(enclave, load_normal, &retval));
+    ENCLAVE_TEST_ASSERT(err_SUCCESS == retval);
+
+    TEST_LOG("Load omitting the secret: must still be accepted");
+    ENCLAVE_TEST_ASSERT(0 == send_minimal_load(enclave, load_no_secret, &retval));
+    ENCLAVE_TEST_ASSERT(err_SUCCESS == retval);
+
+    return 0;
+}
+
+// enclave_load_pb allocates a workspace up front and every exit path has to
+// release it, including the ones that reject the request partway through.  A
+// path that leaked would accumulate a host-sized allocation per rejected call,
+// so drive a rejection that happens late in the call and confirm the enclave
+// still serves loads afterwards.
+int test_load_pb_cleans_up_after_rejection(oe_enclave_t *enclave)
+{
+    int retval = err_SUCCESS;
+
+    TEST_LOG("Load with a malformed tuple length: rejected late in the call");
+    ENCLAVE_TEST_ASSERT(0 == send_minimal_load(enclave, load_bad_tuples, &retval));
+    ENCLAVE_TEST_ASSERT(err_ENCLAVE__LOADPB__TUPLES_INVALID == retval);
+
+    TEST_LOG("Load again: must still succeed");
+    ENCLAVE_TEST_ASSERT(0 == send_minimal_load(enclave, load_normal, &retval));
+    ENCLAVE_TEST_ASSERT(err_SUCCESS == retval);
+
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2)
@@ -509,6 +587,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_empty_request(enclave));
     RUN_TEST(test_invalid_client_ids(enclave));
     RUN_TEST(test_client_released_on_state_rejection(enclave));
+    RUN_TEST(test_load_pb_secret_is_optional(enclave));
+    RUN_TEST(test_load_pb_cleans_up_after_rejection(enclave));
     RUN_TEST(teardown_enclave(enclave, NUM_SHARDS, tids));
     return 0;
 }
