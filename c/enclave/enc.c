@@ -58,9 +58,21 @@ static uint8_t g_init_done = 0;
 #define ENCLAVE_INIT_INITIALIZING 1
 #define ENCLAVE_INIT_INITIALIZED 2
 
+// Client states, held in the low bit of client_t.acq.  See client_t.
 #define CLIENT_UNUSED 0
 #define CLIENT_INUSE 1
-#define CLIENT_DELETE 2
+#define CLIENT_STATE_MASK ((uint64_t) 0x1)
+
+// The acq word of a client that is dead, or that has not been published yet.
+// This is deliberately not [g_client_secret | state] for any state, so no
+// acquire can ever match it.  It is also what MALLOCZ leaves behind, so a
+// freshly allocated client_t is un-acquirable until client_add publishes it.
+#define CLIENT_ACQ_DEAD ((uint64_t) 0)
+
+// The acq word of a live client in state [state].
+static uint64_t client_acq(uint8_t state) {
+  return __atomic_load_n(&g_client_secret, __ATOMIC_RELAXED) | (uint64_t) state;
+}
 
 static error_t check_init_complete() {
   if (__atomic_load_n(&g_init_done, __ATOMIC_ACQUIRE) != ENCLAVE_INIT_INITIALIZED) return err_ENCLAVE__GENERAL__NOINIT;
@@ -86,8 +98,13 @@ typedef struct
   // These could relatively easily force processing on unallocated heap space,
   // and the code is not hardened for that.  With these values, we attempt to
   // protect against that.
-  uint64_t canary;
-  uint8_t state;
+  //
+  // [acq] fuses the two into a single word: the high bits carry
+  // [g_client_secret], the low CLIENT_STATE_MASK bit carries the state.
+  //
+  // Every read-modify-write of [acq] must be a compare-exchange against
+  // client_acq(expected_state).  Never store a state into it on its own.
+  uint64_t acq;
 
   uint8_t *workspace;
   struct org_signal_cdsi_client_request_t *req;
@@ -121,48 +138,56 @@ static error_t generate_privkey(size_t key_size, uint8_t key[])
 
 // All client_ return with the client's `mu` locked.
 
-static error_t client_setstate(client_t* c, uint8_t from_state, uint8_t to_state) {
-  ASSERT_ERR(__atomic_compare_exchange_n(&c->state, &from_state, to_state, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQ_REL), err_ENCLAVE__GENERAL__CLIENT_LOCK_FAILED);
+// Moves [c] from [from_state] to [to_state].  The compare covers the whole acq
+// word, so this checks that [c] is a live client and moves its state in one
+// atomic operation.  Fails if [c] is not a live client in [from_state].
+static error_t client_setacq(client_t* c, uint8_t from_state, uint64_t to_acq, error_t on_fail) {
+  uint64_t expected = client_acq(from_state);
+  ASSERT_ERR(__atomic_compare_exchange_n(&c->acq, &expected, to_acq, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE), on_fail);
   return err_SUCCESS;
 }
 
+static error_t client_setstate(client_t* c, uint8_t from_state, uint8_t to_state) {
+  return client_setacq(c, from_state, client_acq(to_state), err_ENCLAVE__GENERAL__CLIENT_LOCK_FAILED);
+}
+
+// Rejects [id] as a client handle if dereferencing it could corrupt something
+// other than a client.  The g_client_secret check matters because acq sits at
+// offset 0: that address would aim the compare-exchange at the secret itself,
+// where the UNUSED (zero) state makes it match and be overwritten.
+#define ASSERT_PLAUSIBLE_CLIENT(c, err) do { \
+  ASSERT_ERR(oe_is_within_enclave((c), sizeof(client_t)), (err)); \
+  ASSERT_ERR(((uintptr_t)(c)) != ((uintptr_t)&g_client_secret), (err)); \
+} while (0)
+
 static error_t client_add(client_t* c, uint64_t* id) {
   ASSERT_ERR(oe_is_within_enclave(c, sizeof(client_t)), err_ENCLAVE__GENERAL__CLIENT_ADD_FAILED);
-  RETURN_IF_ERROR(client_setstate(c, CLIENT_UNUSED, CLIENT_INUSE));
+  // [c] has not been published to the host yet, so no other thread can reach
+  // it.  A plain store is enough to turn it into a live, held client, and it
+  // is the only place the secret legitimately enters an allocation.
+  __atomic_store_n(&c->acq, client_acq(CLIENT_INUSE), __ATOMIC_RELEASE);
   *id = (uint64_t)c;
-  __atomic_store_n(&c->canary, g_client_secret, __ATOMIC_RELEASE);
   TEST_LOG("client_add(%p)", c);
   return err_SUCCESS;
 }
 
 static error_t client_get(uint64_t id, client_t** c) {
   *c = (client_t*)id;
-  ASSERT_ERR(oe_is_within_enclave(*c, sizeof(client_t)), err_ENCLAVE__GENERAL__CLIENT_GET_FAILED);
-  ASSERT_ERR(((uintptr_t)*c) != ((uintptr_t)&g_client_secret), err_ENCLAVE__GENERAL__CLIENT_GET_FAILED);
-  ASSERT_ERR(__atomic_load_n(&(*c)->canary, __ATOMIC_ACQUIRE) == g_client_secret, err_ENCLAVE__GENERAL__CLIENT_GET_FAILED);
-  RETURN_IF_ERROR(client_setstate(*c, CLIENT_UNUSED, CLIENT_INUSE));
+  ASSERT_PLAUSIBLE_CLIENT(*c, err_ENCLAVE__GENERAL__CLIENT_GET_FAILED);
+  // Single atomic acquire: validating that this is a live, unused client and
+  // taking it are the same operation.
+  RETURN_IF_ERROR(client_setacq(*c, CLIENT_UNUSED, client_acq(CLIENT_INUSE), err_ENCLAVE__GENERAL__CLIENT_GET_FAILED));
   TEST_LOG("client_get(%p)", *c);
   return err_SUCCESS;
 }
 
 static error_t client_remove(uint64_t id, client_t** c) {
   *c = (client_t*)id;
-  ASSERT_ERR(oe_is_within_enclave(*c, sizeof(client_t)), err_ENCLAVE__GENERAL__CLIENT_REMOVE_FAILED);
-  ASSERT_ERR(((uintptr_t)*c) != ((uintptr_t)&g_client_secret), err_ENCLAVE__GENERAL__CLIENT_REMOVE_FAILED);
-  uintptr_t expected_canary = __atomic_load_n(&g_client_secret, __ATOMIC_CONSUME);
-  ASSERT_ERR(__atomic_compare_exchange_n(
-          &(*c)->canary,
-          &expected_canary,
-          0,
-          false,
-          __ATOMIC_ACQ_REL,
-          __ATOMIC_ACQ_REL),
-      err_ENCLAVE__GENERAL__CLIENT_REMOVE_FAILED);
-  error_t err = client_setstate(*c, CLIENT_UNUSED, CLIENT_DELETE);
-  if (err != err_SUCCESS) {
-    __atomic_store_n(&(*c)->canary, g_client_secret, __ATOMIC_RELEASE);
-    return err;
-  }
+  ASSERT_PLAUSIBLE_CLIENT(*c, err_ENCLAVE__GENERAL__CLIENT_REMOVE_FAILED);
+  // Take the client and kill it in one step.  Going straight to
+  // CLIENT_ACQ_DEAD (rather than to some "deleted" state) drops the secret, so
+  // the allocation stops being acquirable the instant it stops being ours.
+  RETURN_IF_ERROR(client_setacq(*c, CLIENT_UNUSED, CLIENT_ACQ_DEAD, err_ENCLAVE__GENERAL__CLIENT_REMOVE_FAILED));
   TEST_LOG("client_remove(%p)", *c);
   return err_SUCCESS;
 }
@@ -201,6 +226,12 @@ int enclave_init(size_t available_memory, double load_factor, size_t num_shards,
   uint8_t hash_key[8];
   CHECK(OE_OK == oe_random(hash_key, 8));
   CHECK(OE_OK == oe_random(&g_client_secret, sizeof(g_client_secret)));
+  // The low bit of client_t.acq holds the client state, so the secret must
+  // leave it clear.  The top bit is forced on so that client_acq(UNUSED) can
+  // never collide with CLIENT_ACQ_DEAD, which would make zeroed heap memory
+  // acquirable.
+  g_client_secret &= ~CLIENT_STATE_MASK;
+  g_client_secret |= ((uint64_t) 1) << 63;
   TEST_LOG("sharded_ohtable_create");
   g_table = sharded_ohtable_create(sizeof record / sizeof t, num_shards, hash_key, getentropy);
   memset(hash_key, 0, 8);
@@ -360,9 +391,9 @@ int enclave_load_pb(
 
 static void client_free(client_t* c) {
   CHECK(oe_is_within_enclave(c, sizeof(client_t)));
-  // This may rewrite an already-zero value.
-  __atomic_store_n(&c->canary, 0, __ATOMIC_RELEASE);
-  __atomic_store_n(&c->state, CLIENT_DELETE, __ATOMIC_RELEASE);
+  // This may rewrite an already-dead value: client_remove kills the acq word,
+  // and enclave_new_client's error path frees clients that were never live.
+  __atomic_store_n(&c->acq, CLIENT_ACQ_DEAD, __ATOMIC_RELEASE);
   if (c->workspace)
     free(c->workspace);
   if (c->handshake != NULL)
@@ -565,11 +596,12 @@ int enclave_run(
   RETURN_IF_ERROR(check_init_complete());
   client_t *c;
   RETURN_IF_ERROR(client_get(cli, &c));
+  error_t err = err_SUCCESS;
   if (c->req == NULL || c->send == NULL || c->recv == NULL)
   {
-    return err_ENCLAVE__GENERAL__CLIENT_STATE;
+    err = err_ENCLAVE__GENERAL__CLIENT_STATE;
+    goto client_unlock;
   }
-  error_t err = err_SUCCESS;
 
   // Decrypt incoming buffer.
   TEST_LOG("noise_decrypt_message_inplace size=%zu", in_size);

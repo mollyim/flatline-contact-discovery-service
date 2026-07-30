@@ -441,6 +441,54 @@ int test_invalid_client_ids(oe_enclave_t* enclave)
     ENCLAVE_TEST_ASSERT(0 == enclave_close_client(enclave, &retval, valid));
     ENCLAVE_TEST_ASSERT(err_ENCLAVE__GENERAL__CLIENT_REMOVE_FAILED == retval);
 
+    TEST_LOG("Trying client run with closed client ID (use-after-free)");
+    out_buf_size = sizeof(out_buf);
+    ENCLAVE_TEST_ASSERT(0 == enclave_run(
+        enclave, &retval, valid, 0, sizeof(in_buf), in_buf, out_buf_size, out_buf, &out_buf_size));
+    ENCLAVE_TEST_ASSERT(err_ENCLAVE__GENERAL__CLIENT_GET_FAILED == retval);
+
+    return 0;
+}
+
+// A client ECALL that rejects the client on its state must still release the
+// client.  Returning without unlocking would strand it INUSE, which makes the
+// handle permanently unusable and, because close needs the client UNUSED, also
+// leaks the client_t and everything hanging off it.  A host can drive that in a
+// loop to exhaust the enclave heap.
+int test_client_released_on_state_rejection(oe_enclave_t* enclave)
+{
+    uint8_t in_buf[8];
+    uint8_t out_buf[8];
+    size_t out_buf_size = sizeof(out_buf);
+    int retval = err_SUCCESS;
+
+    uint64_t cli = 0;
+    uint8_t ereport[4096];
+    size_t ereport_size = sizeof(ereport);
+    ENCLAVE_TEST_ASSERT(0 == enclave_new_client(
+        enclave, &retval, &cli, ereport_size, ereport, &ereport_size));
+    ENCLAVE_TEST_ASSERT(err_SUCCESS == retval);
+
+    // This client has not handshaken or rate limited, so req/send/recv are all
+    // NULL and enclave_run rejects it before doing any work.
+    TEST_LOG("Running a client that is not ready");
+    ENCLAVE_TEST_ASSERT(0 == enclave_run(
+        enclave, &retval, cli, 0, sizeof(in_buf), in_buf, out_buf_size, out_buf, &out_buf_size));
+    ENCLAVE_TEST_ASSERT(err_ENCLAVE__GENERAL__CLIENT_STATE == retval);
+
+    // The rejection above must be repeatable.  If the first call kept the
+    // client locked, this one fails to acquire it and reports GET_FAILED.
+    TEST_LOG("Running it again: must fail the same way, not fail to acquire");
+    out_buf_size = sizeof(out_buf);
+    ENCLAVE_TEST_ASSERT(0 == enclave_run(
+        enclave, &retval, cli, 0, sizeof(in_buf), in_buf, out_buf_size, out_buf, &out_buf_size));
+    ENCLAVE_TEST_ASSERT(err_ENCLAVE__GENERAL__CLIENT_STATE == retval);
+
+    // And the client must still be closeable, since close needs it UNUSED.
+    TEST_LOG("Closing it: must succeed");
+    ENCLAVE_TEST_ASSERT(0 == enclave_close_client(enclave, &retval, cli));
+    ENCLAVE_TEST_ASSERT(err_SUCCESS == retval);
+
     return 0;
 }
 
@@ -460,6 +508,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_mutithread_attest_and_handshake(enclave));
     RUN_TEST(test_empty_request(enclave));
     RUN_TEST(test_invalid_client_ids(enclave));
+    RUN_TEST(test_client_released_on_state_rejection(enclave));
     RUN_TEST(teardown_enclave(enclave, NUM_SHARDS, tids));
     return 0;
 }
