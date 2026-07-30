@@ -200,8 +200,18 @@ int enclave_init(size_t available_memory, double load_factor, size_t num_shards,
 
   error_t err = err_SUCCESS;
   ASSERT_ERR(load_factor >= 1.0 && load_factor <= 3.0, err_ENCLAVE__GENERAL__INVALID_LOAD_FACTOR);
-  ASSERT_ERR(OE_OK == oe_attester_initialize(), err_ENCLAVE__GENERAL__OE_ATTESTER_INITIALIZE);
   // oe_attester_initialize() is basic, and it will succeed as long as one attester plugin loads.
+  // On a host with no functional SGX quoting service (e.g. a CI runner without SGX
+  // hardware), newer SGX runtime libraries make it fail with OE_SERVICE_UNAVAILABLE
+  // rather than deferring that failure to oe_attester_select_format() below, so under
+  // INSECURE we tolerate it and continue.
+  if (OE_OK != oe_attester_initialize()) {
+#ifdef INSECURE
+    ENC_LOG_ERROR("Unable to oe_attester_initialize, but INSECURE so continuing");
+#else
+    return err_ENCLAVE__GENERAL__OE_ATTESTER_INITIALIZE;
+#endif
+  }
   // We want to fail fast if the format that we use is not available, so we check that it is.
   oe_uuid_t ignored;
   if (OE_OK != oe_attester_select_format(&sgx_remote_uuid, 1, &ignored)) {
